@@ -26,7 +26,7 @@ export interface DecideResponse {
 
 export interface CoreClientOptions {
   url: string;            // e.g. http://127.0.0.1:8790
-  timeoutMs?: number;     // default 1500
+  timeoutMs?: number;     // default 3000 (must exceed core classifier 2000ms + overhead)
   harness?: string;       // default "pi"
 }
 
@@ -35,7 +35,7 @@ export class CoreClient {
 
   async decide(state: string, context: Record<string, unknown> = {}): Promise<RouterDecision | null> {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), this.opts.timeoutMs ?? 1500);
+    const t = setTimeout(() => ctrl.abort(), this.opts.timeoutMs ?? 3000);
     try {
       const res = await fetch(`${this.opts.url}/decide`, {
         method: "POST",

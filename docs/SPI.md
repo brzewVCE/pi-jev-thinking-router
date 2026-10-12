@@ -47,7 +47,7 @@ Errors:
 Same request minus context/harness/session; returns raw normalized answers only.
 
 ## GET /health
-`{"ok": true, "classifier": "<base_url>"}` — 200 if core alive (does NOT imply classifier alive).
+`{"ok": true, "classifier": "<base_url>", "state": {"last_messages": N, "max_tokens": M}, "protocol_version": 1}` — 200 if core alive (does NOT imply classifier alive). Adapters pull `state` at startup (W12); extra fields are forward-compatible (tolerate unknown keys).
 
 ## Adapter contract (SPI)
 

@@ -14,7 +14,7 @@ contract, so a dead router never breaks the agent.
 
 Config (env):
   JEVRROUTER_URL        core daemon base URL (default http://127.0.0.1:8790)
-  JEVRROUTER_TIMEOUT_MS per-call timeout (default 1500)
+  JEVRROUTER_TIMEOUT_MS per-call timeout (default 3000)
   JEVRROUTER_ENABLED    "0" disables the adapter entirely (default "1")
   JEVRROUTER_CHILDREN   "0" disables delegate_task routing (default "1")
 """
@@ -58,22 +58,27 @@ def _decide(state: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 _state_window = {"last_messages": 4, "max_tokens": 1500}  # defaults; refreshed from core /health
+_PROTOCOL_OK = True  # pass2 issue 1: set False on protocol major mismatch; register() refuses
 
 
 def _refresh_state_window() -> None:
     """W12/W13: pull state window + protocol version from the core at startup.
     Mismatched protocol major disables the adapter (SPI contract)."""
+    global _PROTOCOL_OK
     try:
         with urllib.request.urlopen(f"{_URL}/health", timeout=_TIMEOUT) as resp:
             proto = resp.headers.get("X-Router-Protocol", "1")
             payload = json.loads(resp.read().decode("utf-8"))
-        if int(proto) != 1:
-            raise RuntimeError(f"unsupported core protocol {proto}")
-        w = payload.get("state") or {}
-        _state_window["last_messages"] = int(w.get("last_messages", 4))
-        _state_window["max_tokens"] = int(w.get("max_tokens", 1500))
-    except Exception as e:  # noqa: BLE001 - fail-open; defaults remain
+    except Exception as e:  # noqa: BLE001 - core down: fail-open with defaults
         logger.warning("jev-router: could not read core /health (%s); using default state window", e)
+        return
+    if int(proto) != 1:
+        # Raised OUTSIDE the try so it cannot be swallowed (pass2 issue 1).
+        _PROTOCOL_OK = False
+        raise RuntimeError(f"unsupported core protocol {proto}")
+    w = payload.get("state") or {}
+    _state_window["last_messages"] = int(w.get("last_messages", 4))
+    _state_window["max_tokens"] = int(w.get("max_tokens", 1500))
 
 
 def _cap_tokens(text: str, max_tokens: int) -> str:
@@ -192,7 +197,14 @@ def register(ctx) -> None:
     if not _ENABLED:
         logger.info("jev-router adapter disabled via JEVRROUTER_ENABLED=0")
         return
-    _refresh_state_window()
+    try:
+        _refresh_state_window()
+    except RuntimeError as e:
+        logger.error("jev-router adapter NOT registered: %s", e)
+        return
+    if not _PROTOCOL_OK:
+        logger.error("jev-router adapter NOT registered: protocol mismatch")
+        return
     ctx.register_middleware("llm_request", on_llm_request)
     ctx.register_middleware("tool_request", on_tool_request)
     logger.info("jev-router adapter registered (core at %s, window=%s)", _URL, _state_window)

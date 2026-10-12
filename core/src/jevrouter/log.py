@@ -15,10 +15,10 @@ class DecisionLog:
         self.content = content
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Nits: 'content: full' stores prompt text -> keep the file owner-only.
+        # Create with 0600 atomically (pass2 issue 4: chmod-before-exist was a no-op).
         try:
-            os.chmod(self.path, 0o600)
-        except FileNotFoundError:
-            pass
+            fd = os.open(str(self.path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+            os.close(fd)
         except OSError:
             pass
 

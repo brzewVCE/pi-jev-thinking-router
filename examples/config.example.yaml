@@ -129,7 +129,9 @@ spawn:
   confirm: false
 
 stickiness:
-  # EXAMPLE: keep the expensive model during a long conversation for cache reuse.
+  # NOT YET IMPLEMENTED in core (phase 2, see docs/ROADMAP.md). Loaded and
+  # validated but consumed nowhere yet. Kept here as a config-shape example of
+  # cache-prefix routing intent, not active behavior.
   enabled: true
   min_turns_before_downgrade: 3
 
