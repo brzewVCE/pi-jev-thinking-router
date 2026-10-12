@@ -187,8 +187,6 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 	let last: RouteView | null = null;
 	let turn = 0;
 
-	pi.setLabel("jev-router");
-
 	function render(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		const ui = uiFor(ctx.sessionManager.getSessionId());
