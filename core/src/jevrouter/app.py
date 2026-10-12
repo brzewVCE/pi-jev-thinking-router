@@ -29,33 +29,55 @@ def create_app(cfg: RouterConfig) -> FastAPI:
 
     @app.get("/health")
     def health() -> JSONResponse:
-        return with_proto({"ok": True, "classifier": cfg.classifier.base_url})
+        # Includes the state-window config so adapters can honor
+        # state.last_messages / state.max_tokens without their own copy
+        # of the config file (W12).
+        return with_proto({"ok": True, "classifier": cfg.classifier.base_url,
+                         "state": cfg.state,
+                         "protocol_version": cfg.server.get("protocol_version", 1)})
 
+    # C4: classifier I/O is blocking, so it runs via run_in_threadpool and
+    # never stalls the event loop.
     @app.post("/classify")
-    async def classify_only(req: Request) -> JSONResponse:
-        body = await req.json()
-        state = body.get("state", "")
+    async def classify_endpoint(request: Request) -> JSONResponse:
         try:
-            res = classify(cfg.classifier, state, cfg.questions)
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("body must be a JSON object")
+        except Exception as e:  # W9
+            return with_proto({"ok": False, "error": "bad_request", "detail": str(e)}, 400)
+        from starlette.concurrency import run_in_threadpool
+        from .classifier import classify as _clf
+        try:
+            res = await run_in_threadpool(_clf, cfg.classifier, body.get("state", ""), cfg.questions)
         except ClassifierUnavailable as e:
             return with_proto({"ok": False, "error": "classifier_unavailable", "detail": str(e)}, 503)
+        except ClassifierError as e:
+            return with_proto({"ok": False, "error": "classifier_error", "detail": str(e)}, 502)
         return with_proto({"ok": True, **res})
 
     @app.post("/decide")
-    async def decide_route(req: Request) -> JSONResponse:
-        body = await req.json()
+    async def decide_route(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("body must be a JSON object")
+        except Exception as e:  # W9
+            return with_proto({"ok": False, "error": "bad_request", "detail": str(e)}, 400)
         state: str = body.get("state", "")
         context: dict[str, Any] = body.get("context", {}) or {}
         harness: str = body.get("harness", "unknown")
         session: str = body.get("session", "")
 
+        from starlette.concurrency import run_in_threadpool
+        from .classifier import classify as _clf
         try:
-            res = classify(cfg.classifier, state, cfg.questions)
+            res = await run_in_threadpool(_clf, cfg.classifier, state, cfg.questions)
             answers = res["answers"]
             decision = decide(cfg, answers, context)
             decision = apply_confidence_floor(cfg, decision, answers)
             decision = apply_spawn_policy(cfg, decision, answers)
-            log.write(harness=harness, session=session, state=state, answers=answers,
+            _safe_log(log, harness=harness, session=session, state=state, answers=answers,
                      decision=decision, classifier_latency_ms=res["latency_ms"])
             return with_proto({"ok": True, "decision": decision,
                              "answers": answers,
@@ -71,13 +93,22 @@ def create_app(cfg: RouterConfig) -> FastAPI:
                             "source": "classifier_down_fallback",
                             "spawn": {"allowed": False, "forced": False, "vetoed": False}}
                 status = 200
-            log.write(harness=harness, session=session, state=state, answers=None,
+            _safe_log(log, harness=harness, session=session, state=state, answers=None,
                      decision=decision, error=str(e))
             return with_proto({"ok": status == 200, "decision": decision,
                               "error": "classifier_unavailable", "detail": str(e)}, status)
         except ClassifierError as e:
-            log.write(harness=harness, session=session, state=state, answers=None,
-                     decision={"source": "classifier_error"}, error=str(e))
+            _safe_log(log, harness=harness, session=session, state=state, answers=None,
+                      decision={"source": "classifier_error"}, error=str(e))
             return with_proto({"ok": False, "error": "classifier_error", "detail": str(e)}, 502)
 
     return app
+
+
+def _safe_log(log: DecisionLog, **kwargs) -> None:
+    """W8: a logging failure (disk full, perms) must never destroy a computed decision."""
+    try:
+        log.write(**kwargs)
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("jev-router: decision log write failed: %s", e)

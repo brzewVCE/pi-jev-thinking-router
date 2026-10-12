@@ -43,6 +43,16 @@ class RouterConfig:
 
 _REQUIRED_TOP = ("classifier", "questions", "lanes", "rules", "fallback")
 
+# Fields adapters always provide in the rule namespace (see docs/SPI.md).
+_CONTEXT_FIELDS = frozenset({
+    "has_images", "prompt_tokens", "session_turn", "harness", "kind", "session_id",
+})
+
+# Valid keys inside a rule's `then:` block.
+_KNOWN_ACTIONS = frozenset({
+    "lane", "lane_template", "pin", "veto_spawn", "force_spawn",
+})
+
 
 def load_config(path: str) -> RouterConfig:
     with open(path, "r", encoding="utf-8") as f:
@@ -66,6 +76,10 @@ def load_config(path: str) -> RouterConfig:
     )
     if clf.down not in ("default_model", "block"):
         raise ConfigError("classifier.down must be 'default_model' or 'block'")
+    if clf.timeout_ms <= 0:
+        raise ConfigError("classifier.timeout_ms must be > 0")
+    if not clf.path.startswith("/"):
+        raise ConfigError("classifier.path must start with '/'")
 
     for name, q in data["questions"].items():
         if q.get("type") not in ("choice", "score", "noul"):
@@ -81,6 +95,41 @@ def load_config(path: str) -> RouterConfig:
             raise ConfigError(f"rule {rule.get('name', '?')}: when needs field/op/value")
         if w["op"] not in ("==", "!=", ">", ">=", "<", "<=", "in"):
             raise ConfigError(f"rule {rule.get('name', '?')}: bad op {w['op']}")
+
+        # W10: validate field references and action keys at load time so a
+        # typo (veto_spwn) or a field no question produces (pii_prob without a
+        # pii question) fails fast instead of silently never matching.
+        known_fields = set(_CONTEXT_FIELDS)
+        for qname, q in data["questions"].items():
+            known_fields |= {qname, f"{qname}_confidence", f"{qname}_prob"}
+        if w["field"] not in known_fields:
+            raise ConfigError(
+                f"rule {rule.get('name', '?')}: unknown field '{w['field']}'. "
+                f"Known: {sorted(known_fields)}")
+
+        t = rule["then"]
+        actions = set(t)
+        unknown_actions = actions - _KNOWN_ACTIONS
+        if unknown_actions:
+            raise ConfigError(
+                f"rule {rule.get('name', '?')}: unknown action(s) {sorted(unknown_actions)}. "
+                f"Known: {sorted(_KNOWN_ACTIONS)}")
+        if "pin" in t:
+            if not isinstance(t["pin"], dict) or "model" not in t["pin"]:
+                raise ConfigError(f"rule {rule.get('name', '?')}: pin requires a 'model' key")
+        if "lane" in t and t["lane"] not in data["lanes"]:
+            raise ConfigError(f"rule {rule.get('name', '?')}: unknown lane '{t['lane']}'")
+        if "lane_template" in t:
+            import string as _string
+            try:
+                parsed = [f for (_, f, _, _) in _string.Formatter().parse(t["lane_template"]) if f]
+            except Exception as e:
+                raise ConfigError(f"rule {rule.get('name', '?')}: malformed lane_template: {e}")
+            for fname in parsed:
+                base = fname.split(".")[0].split("[")[0]
+                if base not in known_fields:
+                    raise ConfigError(
+                        f"rule {rule.get('name', '?')}: lane_template references unknown field '{base}'")
 
     return RouterConfig(
         classifier=clf,

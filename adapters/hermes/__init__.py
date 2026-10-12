@@ -29,7 +29,9 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 _URL = os.environ.get("JEVRROUTER_URL", "http://127.0.0.1:8790").rstrip("/")
-_TIMEOUT = float(os.environ.get("JEVRROUTER_TIMEOUT_MS", "1500")) / 1000.0
+# Adapter timeout must EXCEED core classifier timeout + HTTP overhead (W7),
+# otherwise slow-but-successful classifications get abandoned mid-flight.
+_TIMEOUT = float(os.environ.get("JEVRROUTER_TIMEOUT_MS", "3000")) / 1000.0
 _ENABLED = os.environ.get("JEVRROUTER_ENABLED", "1") != "0"
 _CHILDREN = os.environ.get("JEVRROUTER_CHILDREN", "1") != "0"
 
@@ -55,8 +57,36 @@ def _decide(state: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _last_messages_from_kwargs(request: Dict[str, Any], n: int = 4) -> str:
-    """Extract the tail of the conversation from provider kwargs as classifier state."""
+_state_window = {"last_messages": 4, "max_tokens": 1500}  # defaults; refreshed from core /health
+
+
+def _refresh_state_window() -> None:
+    """W12/W13: pull state window + protocol version from the core at startup.
+    Mismatched protocol major disables the adapter (SPI contract)."""
+    try:
+        with urllib.request.urlopen(f"{_URL}/health", timeout=_TIMEOUT) as resp:
+            proto = resp.headers.get("X-Router-Protocol", "1")
+            payload = json.loads(resp.read().decode("utf-8"))
+        if int(proto) != 1:
+            raise RuntimeError(f"unsupported core protocol {proto}")
+        w = payload.get("state") or {}
+        _state_window["last_messages"] = int(w.get("last_messages", 4))
+        _state_window["max_tokens"] = int(w.get("max_tokens", 1500))
+    except Exception as e:  # noqa: BLE001 - fail-open; defaults remain
+        logger.warning("jev-router: could not read core /health (%s); using default state window", e)
+
+
+def _cap_tokens(text: str, max_tokens: int) -> str:
+    # Rough token cap (~4 chars/token); keeps the tail (most recent context).
+    limit = max_tokens * 4
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def _last_messages_from_kwargs(request: Dict[str, Any]) -> str:
+    """Extract the tail of the conversation from provider kwargs as classifier state,
+    honoring the core-provided state window (W12)."""
     msgs = request.get("messages") or request.get("input") or []
     tail: list[str] = []
     for m in reversed(msgs):
@@ -68,9 +98,10 @@ def _last_messages_from_kwargs(request: Dict[str, Any], n: int = 4) -> str:
                 parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
                 if parts:
                     tail.append(" ".join(parts))
-        if len(tail) >= n:
+        if len(tail) >= _state_window["last_messages"]:
             break
-    return "\n---\n".join(reversed(tail))
+    joined = "\n---\n".join(reversed(tail))
+    return _cap_tokens(joined, _state_window["max_tokens"])
 
 
 def _has_images(request: Dict[str, Any]) -> bool:
@@ -85,67 +116,83 @@ def _has_images(request: Dict[str, Any]) -> bool:
 def on_llm_request(request: Dict[str, Any], original_request: Dict[str, Any], **ctx: Any):
     if not _ENABLED:
         return None
-    state = _last_messages_from_kwargs(request)
-    if not state.strip():
+    try:
+        state = _last_messages_from_kwargs(request)
+        if not state.strip():
+            return None
+        decision = _decide(state, {
+            "has_images": _has_images(request),
+            "prompt_tokens": len(state) // 4,
+            "session_turn": ctx.get("turn_id"),
+            "session_id": ctx.get("session_id"),
+        })
+        if not decision or not decision.get("model"):
+            return None
+        updated = dict(request)
+        changed = False
+        if decision["model"] != request.get("model"):
+            updated["model"] = decision["model"]
+            changed = True
+        thinking = decision.get("thinking")
+        if thinking == "off":
+            # Explicitly CLEAR reasoning so a trivial lane downgrades a request
+            # that already carries a high reasoning_effort.
+            if request.get("reasoning_effort") not in (None, "none", "off"):
+                updated["reasoning_effort"] = "none"
+                changed = True
+        elif thinking:
+            updated["reasoning_effort"] = thinking
+            changed = True
+        if not changed:
+            return None
+        logger.info("jev-router: routed turn -> model=%s thinking=%s (rule=%s)",
+                   decision.get("model"), thinking, decision.get("rule"))
+        return {"request": updated, "source": "jev-router", "reason": f"rule:{decision.get('rule')}"}
+    except Exception as e:  # noqa: BLE001 - fail-open by design (C1)
+        logger.warning("jev-router: llm_request middleware error (%s); leaving request untouched", e)
         return None
-    decision = _decide(state, {
-        "has_images": _has_images(request),
-        "prompt_tokens": ctx.get("prompt_tokens") or len(json.dumps(request)) // 4,
-        "session_turn": ctx.get("turn_id"),
-        "session_id": ctx.get("session_id"),
-    })
-    if not decision or not decision.get("model"):
-        return None
-    updated = dict(request)
-    changed = False
-    if decision["model"] != request.get("model"):
-        updated["model"] = decision["model"]
-        changed = True
-    thinking = decision.get("thinking")
-    if thinking and thinking != "off":
-        # Hermes maps reasoning_config -> provider reasoning_effort; the OpenAI-compat
-        # kwarg is reasoning_effort. 'off' means don't request reasoning.
-        updated["reasoning_effort"] = thinking
-        changed = True
-    if not changed:
-        return None
-    logger.info("jev-router: routed turn -> model=%s thinking=%s (rule=%s)",
-               decision.get("model"), thinking, decision.get("rule"))
-    return {"request": updated, "source": "jev-router", "reason": f"rule:{decision.get('rule')}"}
 
 
 def on_tool_request(tool_name: str, args: Dict[str, Any], original_args: Dict[str, Any], **ctx: Any):
     if not (_ENABLED and _CHILDREN) or tool_name != "delegate_task":
         return None
-    instruction = args.get("task") or args.get("goal") or ""
-    if not instruction.strip():
+    try:
+        instruction = args.get("task") or args.get("goal") or ""
+        if not instruction.strip():
+            return None
+        decision = _decide(instruction, {
+            "kind": "child_instruction",
+            "session_id": ctx.get("session_id"),
+        })
+        if not decision or not decision.get("model"):
+            return None
+        updated = dict(args)
+        updated["model"] = decision["model"]
+        if decision.get("provider"):
+            updated["provider"] = decision["provider"]
+        if decision.get("base_url"):
+            updated["base_url"] = decision["base_url"]
+        if decision.get("thinking"):
+            updated["reasoning_effort"] = decision["thinking"]
+        if decision.get("spawn", {}).get("vetoed"):
+            # Best-effort veto hint. NOTE (W14): delegate_task does not honor
+            # this key today; a real veto needs the phase-3 spike on whether
+            # tool_request can fail/replace the call. Until then this is a
+            # logged advisory only.
+            updated["__jev_router_veto"] = "core vetoed this spawn (rule: " + str(decision.get("rule")) + "); handle inline"
+        logger.info("jev-router: child instruction routed -> %s (rule=%s)",
+                    decision.get("model"), decision.get("rule"))
+        return {"args": updated, "source": "jev-router", "reason": f"child-rule:{decision.get('rule')}"}
+    except Exception as e:  # noqa: BLE001 - fail-open by design (C1)
+        logger.warning("jev-router: tool_request middleware error (%s); leaving args untouched", e)
         return None
-    decision = _decide(instruction, {
-        "kind": "child_instruction",
-        "session_id": ctx.get("session_id"),
-    })
-    if not decision or not decision.get("model"):
-        return None
-    updated = dict(args)
-    updated["model"] = decision["model"]
-    if decision.get("provider"):
-        updated["provider"] = decision["provider"]
-    if decision.get("base_url"):
-        updated["base_url"] = decision["base_url"]
-    if decision.get("thinking"):
-        updated["reasoning_effort"] = decision["thinking"]
-    if decision.get("spawn", {}).get("vetoed"):
-        # Veto: tell the parent to do it itself by failing the call politely.
-        updated["__jev_router_veto"] = "core vetoed this spawn (rule: " + str(decision.get("rule")) + "); handle inline"
-    logger.info("jev-router: child instruction routed -> %s (rule=%s)",
-                decision.get("model"), decision.get("rule"))
-    return {"args": updated, "source": "jev-router", "reason": f"child-rule:{decision.get('rule')}"}
 
 
 def register(ctx) -> None:
     if not _ENABLED:
         logger.info("jev-router adapter disabled via JEVRROUTER_ENABLED=0")
         return
+    _refresh_state_window()
     ctx.register_middleware("llm_request", on_llm_request)
     ctx.register_middleware("tool_request", on_tool_request)
-    logger.info("jev-router adapter registered (core at %s)", _URL)
+    logger.info("jev-router adapter registered (core at %s, window=%s)", _URL, _state_window)

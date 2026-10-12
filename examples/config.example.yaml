@@ -50,6 +50,13 @@ questions:
     instructions: "Should this task be delegated to a subagent instead of handled in the current conversation?"
     true_means: "Independent subtasks, large codebase search, or work that would flood the parent context."
     false_means: "Single focused change, short Q&A, or work the parent already has context for."
+  # EXAMPLE PII question (user-defined; delete freely). Required for the
+  # keep-secrets-local rule below to actually fire.
+  pii:
+    type: noul
+    instructions: "Does this conversation contain personal, confidential client, financial, medical, or credential data (API keys, passwords, names+contact info, account numbers)?"
+    true_means: "Real private or secret data is present in the messages."
+    false_means: "No sensitive data at all."
 
 # ---------------------------------------------------------------------------
 # Lanes: ordered preference lists per outcome. First entry that exists in the

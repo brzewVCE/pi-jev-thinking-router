@@ -15,7 +15,9 @@ def _cmp(op: str, a: Any, b: Any) -> bool:
         if op == "==":
             return a == b
         if op == "!=":
-            return a != b
+            # W6: a missing field must NOT satisfy `!=` — you cannot prove a
+            # value differs from something when the value is absent.
+            return a is not None and a != b
         if a is None:
             return False
         if op == ">":
@@ -47,10 +49,12 @@ def build_fields(answers: dict[str, Any], context: dict[str, Any]) -> dict[str, 
         probs = a.get("probabilities") or {}
         val = a.get("value")
         fields[f"{name}_prob"] = probs.get(val, a.get("confidence", 0.0))
-        # noul answers: expose the probability of TRUE directly for rules like
-        # pii_prob >= 0.5 even when value is a bool string.
-        if "true" in probs:
-            fields[f"{name}_prob"] = probs["true"]
+        # For noul-style answers (bool value), expose the probability of TRUE
+        # directly so rules like `pii_prob >= 0.5` read naturally. Restricted
+        # to bool-valued answers so a choice option literally named "true"
+        # cannot hijack its _prob field (nit).
+        if isinstance(val, bool):
+            fields[f"{name}_prob"] = probs.get("true", 1.0 if val else 0.0)
     return fields
 
 
@@ -97,10 +101,19 @@ def decide(cfg: RouterConfig, answers: dict[str, Any], context: dict[str, Any]) 
             if "lane_template" in t:
                 try:
                     lane_name = t["lane_template"].format(**fields)
-                except KeyError:
+                except Exception:  # W3: KeyError/IndexError/ValueError on malformed templates
                     lane_name = None
             if lane_name:
-                hit = resolve_lane(lane_name, cfg.lanes, set(context.get("available_models") or []) or None)
+                raw_models = context.get("available_models")
+                # W4: distinguish "adapter reported nothing available" ([]) from
+                # "adapter did not report" (None). [] means NO model is usable.
+                if raw_models is None:
+                    available = None
+                else:
+                    available = set(raw_models)
+                    if not available:
+                        continue  # harness has no models -> next rule / fallback
+                hit = resolve_lane(lane_name, cfg.lanes, available)
                 if hit:
                     decision.update(hit)
                     decision["lane"] = lane_name
@@ -140,7 +153,11 @@ def apply_spawn_policy(cfg: RouterConfig, decision: dict[str, Any], answers: dic
     spawn_cfg = cfg.spawn
     if not spawn_cfg.get("enabled", False):
         return decision
-    prob = float(answers.get("needs_spawn", {}).get("probabilities", {}).get("true", 0.0))
+    # W5: the spawn question name is configurable (e.g. PL pack:
+    # "potrzebuje_subagenta"); default keeps backward compat.
+    qname = spawn_cfg.get("question", "needs_spawn")
+    ans = answers.get(qname) or {}
+    prob = float((ans.get("probabilities") or {}).get("true", 0.0))
     threshold = float(spawn_cfg.get("threshold", 0.7))
     st = decision.setdefault("spawn", {"allowed": False, "forced": False, "vetoed": False})
     st["needs_spawn_prob"] = prob

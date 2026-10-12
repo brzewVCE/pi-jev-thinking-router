@@ -5,7 +5,7 @@ import argparse
 import json
 import sys
 
-from .classifier import classify, ClassifierUnavailable
+from .classifier import ClassifierError, ClassifierUnavailable, classify
 from .config import load_config, ConfigError
 from .engine import apply_confidence_floor, apply_spawn_policy, decide
 
@@ -54,6 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     except ClassifierUnavailable as e:
         print(f"classifier unavailable: {e}", file=sys.stderr)
         return 3
+    except ClassifierError as e:
+        print(f"classifier error: {e}", file=sys.stderr)
+        return 4
     if args.cmd == "classify":
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0

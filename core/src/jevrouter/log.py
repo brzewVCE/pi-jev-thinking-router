@@ -14,6 +14,13 @@ class DecisionLog:
         self.path = Path(os.path.expanduser(path))
         self.content = content
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Nits: 'content: full' stores prompt text -> keep the file owner-only.
+        try:
+            os.chmod(self.path, 0o600)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
     def _redact(self, state: str) -> str:
         if self.content == "full":

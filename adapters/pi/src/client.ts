@@ -85,8 +85,15 @@ export function applyDecision(pi: PiLike, decision: RouterDecision | null, curre
     pi.setModel(decision.model);
     applied = true;
   }
-  if (decision.thinking && decision.thinking !== "off" && decision.thinking !== current?.thinking) {
-    pi.setThinkingLevel(decision.thinking);
+  const thinking = decision.thinking;
+  if (thinking === "off") {
+    // C2: explicitly downgrade so a trivial lane clears an existing high level.
+    if (current?.thinking && current.thinking !== "off") {
+      pi.setThinkingLevel("off");
+      applied = true;
+    }
+  } else if (thinking && thinking !== current?.thinking) {
+    pi.setThinkingLevel(thinking);
     applied = true;
   }
   return applied;
