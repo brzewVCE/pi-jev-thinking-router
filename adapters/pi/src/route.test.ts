@@ -76,6 +76,7 @@ interface CtxDouble {
 	hasUI: boolean;
 	ui: UiDouble;
 	sessionManager: { getSessionId(): string; getBranch(): unknown[] };
+	model?: { reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> };
 }
 
 interface PiDouble {
@@ -281,5 +282,42 @@ describe("JEVRROUTER_UI_DEFAULT", () => {
 		await pi.commands.route.handler("on", ctx);
 		await pi.events.before_agent_start({ prompt: "x" }, ctx);
 		assert.equal(decideCalls(calls), 1);
+	});
+});
+
+describe("dynamic model thinking levels", () => {
+	test("model without reasoning skips /decide calls completely", async () => {
+		const { pi, ctx, calls } = await booted();
+		ctx.model = { reasoning: false };
+		await pi.events.before_agent_start({ prompt: "x" }, ctx);
+		assert.equal(decideCalls(calls), 0, "non-reasoning model makes 0 decide calls");
+	});
+
+	test("model with reasoning excludes 'off' from supported_levels", async () => {
+		const { pi, ctx, calls } = await booted();
+		ctx.model = { reasoning: true };
+		await pi.events.before_agent_start({ prompt: "x" }, ctx);
+		assert.equal(decideCalls(calls), 1);
+		const decideCall = calls.find((c) => c.url.endsWith("/decide"))!;
+		const init = decideCall.init as { body: string };
+		const body = JSON.parse(init.body);
+		assert.ok(!body.supported_levels.includes("off"), "'off' must be excluded");
+		assert.deepEqual(body.supported_levels, ["minimal", "low", "medium", "high"]);
+	});
+
+	test("model with thinkingLevelMap respects null overrides and xhigh/max", async () => {
+		const { pi, ctx, calls } = await booted();
+		ctx.model = {
+			reasoning: true,
+			thinkingLevelMap: {
+				minimal: null, // explicitly disabled
+				xhigh: "some-provider-mapping",
+			},
+		};
+		await pi.events.before_agent_start({ prompt: "x" }, ctx);
+		const decideCall = calls.find((c) => c.url.endsWith("/decide"))!;
+		const init = decideCall.init as { body: string };
+		const body = JSON.parse(init.body);
+		assert.deepEqual(body.supported_levels, ["low", "medium", "high", "xhigh"]);
 	});
 });

@@ -109,8 +109,31 @@ function daemonLine(st: DaemonStatus): string {
 	}
 }
 
-/** Thinking levels Pi can actually run — the full SPI v1 canon. Validated before stamping. */
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+/**
+ * Canonical thinking levels in Pi, excluding "off".
+ * Disabling thinking breaks prompt cache continuity, so routing operates
+ * strictly across active reasoning levels.
+ */
+const CANONICAL_REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export interface ModelLike {
+	reasoning?: boolean;
+	thinkingLevelMap?: Record<string, unknown>;
+}
+
+/**
+ * Resolves the active model's supported thinking levels (excluding "off").
+ * If the model does not support reasoning, returns an empty list.
+ */
+export function resolveSupportedLevels(model?: ModelLike): string[] {
+	if (model && !model.reasoning) return [];
+	return CANONICAL_REASONING_LEVELS.filter((level) => {
+		const mapped = model?.thinkingLevelMap?.[level];
+		if (mapped === null) return false;
+		if (level === "xhigh" || level === "max") return mapped !== undefined;
+		return true;
+	});
+}
 
 interface RouteView {
 	effort: string;
@@ -255,6 +278,12 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 		// `route off` disables the decisions themselves, not just the UI:
 		// the turn makes ZERO /decide calls.
 		if (!uiFor(sessionId).enabled) return;
+		// Skip routing if the active model does not support reasoning
+		if (ctx.model && !ctx.model.reasoning) return;
+
+		const supportedLevels = resolveSupportedLevels(ctx.model as ModelLike | undefined);
+		if (supportedLevels.length === 0) return;
+
 		const currentEffort = pi.getThinkingLevel() ?? DEFAULT_EFFORT;
 		try {
 			const prompt = event.prompt ?? "";
@@ -269,7 +298,7 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 				recent_turns: prompt.trim() ? recent : "",
 				has_images: (event.images?.length ?? 0) > 0,
 				current_effort: currentEffort,
-				supported_levels: [...THINKING_LEVELS],
+				supported_levels: supportedLevels,
 				...(CAP ? { cap: CAP } : {}),
 				budget_ms: TIMEOUT_MS,
 			});
@@ -282,7 +311,7 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 				render(ctx);
 				return;
 			}
-			const applied = applyDecision(pi, decision, THINKING_LEVELS, currentEffort);
+			const applied = applyDecision(pi, decision, supportedLevels, currentEffort);
 			last = {
 				effort: decision.effort,
 				source: decision.source,
