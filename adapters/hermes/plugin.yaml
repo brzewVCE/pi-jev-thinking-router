@@ -1,6 +1,6 @@
 name: jev-router
-version: 0.1.0
-description: "Model routing decisions from a jev-router-core daemon (System One classifiers: Kev/Laya/Jev). Rewrites the LLM request's model + reasoning effort per user-defined rules; routes delegate_task children the same way. Fail-open: if the core is down, Hermes keeps its current model."
+version: 1.0.0
+description: "Effort routing from a jev-router core daemon (SPI v1, X-Router-Protocol: 1). Per turn the core asks the decision model for a reasoning level and the adapter stamps only `reasoning_effort` into the provider kwargs — model, messages, system prompt and tools stay untouched, so the prompt cache survives. The user's level is a ceiling: the core clamps to it and never escalates. Fail-open: if the core is down, times out or answers unparsably, Hermes keeps its current effort. delegate_task children get the same effort-only treatment (SPI v1 carries no model field); the spawn veto is advisory."
 author: "jev-router-core contributors"
 middleware:
   - llm_request

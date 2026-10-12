@@ -1,10 +1,16 @@
 {
   "name": "jev-router-pi",
   "version": "0.1.0",
-  "description": "Pi coding agent adapter for jev-router-core (model+thinking routing via System One classifier)",
+  "description": "Pi coding agent adapter for jev-router core (SPI v1 effort-only thinking routing)",
   "license": "Apache-2.0",
   "type": "module",
   "main": "src/client.ts",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "omp": {
+    "extensions": ["./src/index.ts"]
+  },
   "scripts": {
     "build": "tsc",
     "test": "node --test"

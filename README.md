@@ -1,64 +1,54 @@
 # jev-router-core
 
-Harness-agnostic decision engine for model routing: classify a prompt with a
-System One–style classifier (Kev / Laya / Jev cloud — any local or remote
-endpoint), map the classification to **(model, thinking)** via user-defined
-rules, and let adapters apply the decision in Pi, Hermes, or any agent.
+Adapter + documentation home for the **jev-router SPI v1** decision protocol.
 
-## Design principles
-
-1. **Decision-only core.** The core returns decisions; adapters apply them
-   (`setModel`/`setThinkingLevel` in Pi, middleware kwargs in Hermes).
-   The core never proxies model traffic.
-2. **User freedom.** Categories, rules, thresholds, lanes, fallbacks are all
-   user-defined YAML. Nothing is hardcoded — not even PII gating. The repo
-   ships *examples* (like `.env.example`), not policies.
-3. **Zero-shot only.** Classification works from option descriptions in the
-   request. No fine-tuning required or assumed.
-4. **Local-first.** The classifier is expected to be self-hosted (e.g. Kev).
-   If it is down: `classifier_down: default_model | block` decides behavior.
-5. **Full decision log.** Every decision logged as JSONL with full prompt
-   content, reason, and confidence — auditable, greppable.
-
-## Layout
+The canonical core daemon lives in `/workspace/jev-routing/core/` (SPI v1,
+stdlib-only, per `/workspace/jev-routing/CONTRACT.md`). This repo hosts the
+host-side adapters that speak that protocol:
 
 ```
-core/               Python decision engine (FastAPI daemon + CLI)
-  src/jevrouter/
-    app.py          FastAPI endpoints (/classify /decide /health)
-    engine.py       rule interpreter: classification -> (model, thinking)
-    classifier.py   System One wire client (Kev/Laya/Jev-cloud)
-    config.py       YAML config loader + validation
-    log.py          JSONL decision log
 adapters/
-  hermes/           Hermes plugin: llm_request + tool_request middleware
-  pi/               Pi extension (TypeScript): setModel/setThinkingLevel
-examples/
-  config.example.yaml   full annotated example (rules incl. PII as example)
-  categories/           example category packs (EN, PL)
-docs/               architecture, SPI reference, rule DSL
+  hermes/         Hermes plugin: llm_request + tool_request middleware (SPI v1)
+  pi/             Pi/omp extension (TypeScript): setThinkingLevel (SPI v1)
+docs/
+  SPI.md          SPI v1 protocol reference (mirrors CONTRACT.md)
+  ATTRIBUTION.md  third-party projects referenced (no code copied)
 ```
 
-## Quick start (dev)
+## Protocol (SPI v1)
+
+- HTTP JSON. Every response carries `X-Router-Protocol: 1`. Adapters
+  version-check at startup; mismatched majors refuse registration (fail-closed
+  at handshake, fail-open at decision time).
+- v1 decision shape is **effort-only**:
+  `{effort, changed, source, reason_code, policy_version, elapsed_ms[, confidence]}`.
+  The core never routes models in v1 — the executing model stays whatever the
+  host/user picked; only the reasoning effort changes per turn.
+- Fail-open is inviolable: backend down / timeout / unparsable answer =>
+  `changed: false`, the host's request stays untouched, no escalation.
+- Secrets (JEV_API_KEY) are never logged, receipted, or returned by `/health`
+  (only `credential_present: bool`).
+
+See `docs/SPI.md` for the full endpoint reference and
+`/workspace/jev-routing/CONTRACT.md` for the authoritative contract.
+
+## History note (clean cutover, 2026-09-28)
+
+This repo previously contained a protocol-2 core (TOML rule DSL, classifier
+answers, `thinking`+`model` decisions). Per AUDIT-B-1 (B1-3) and the owner's
+decision, that core was **removed** — SPI v1 (`CONTRACT.md`) is the single
+source of truth. The old code remains in git history (pre-2026-09-28 commits).
+
+## Testing
+
+The v1 core + adapter test suites live with the core:
 
 ```bash
-cd core
-uv venv && uv pip install -e .
-jevrouter --config ../examples/config.example.yaml classify "fix the login bug"
-jevrouter serve --config ../examples/config.example.yaml   # FastAPI on :8790
+cd /workspace/jev-routing/core
+python3 -m unittest discover -p 'test_*.py' -v   # 130 tests, stdlib only
 ```
-
-## Protocol
-
-- HTTP JSON. Every response carries `X-Router-Protocol: 1` (core and
-  adapters version-check at startup).
-- Core versions independently from adapters.
-
-## Status
-
-Phase 1 (MVP): core engine + Hermes adapter. See `docs/ROADMAP.md`.
 
 ## License
 
-Apache-2.0. Bundled examples reference third-party projects under their own
+Apache-2.0. Bundled references to third-party projects are under their own
 licenses (see docs/ATTRIBUTION.md).

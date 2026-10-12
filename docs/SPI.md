@@ -1,24 +1,30 @@
 # SPI / Protocol reference (v1)
 
-Core speaks HTTP JSON. Every response carries `X-Router-Protocol: 1`.
-Adapters must check it at startup and refuse mismatched majors.
+Core speaks HTTP JSON (stdlib `http.server` daemon, `/workspace/jev-routing/core`).
+Every response carries `X-Router-Protocol: 1`. Adapters check it at startup and
+refuse mismatched majors (no registration). This document mirrors
+`/workspace/jev-routing/CONTRACT.md`, which is authoritative.
+
+Principle: **Jev decides**. The core applies no word lists or content
+heuristics. Its only logic: transport to the decision backend, level
+normalization, clamp to host-supported levels, per-turn cache, downgrade
+hysteresis, receipts. Backend error = "keep" (no change).
 
 ## POST /decide
 
 Request:
 ```json
 {
-  "state": "text the classifier judges (last N messages joined, token-capped by adapter)",
-  "context": {
-    "has_images": false,
-    "prompt_tokens": 123,
-    "session_turn": 5,
-    "session_id": "abc",
-    "available_models": ["qwen3-4b-local", "qwen3-32b-local"],
-    "kind": "child_instruction"
-  },
-  "harness": "pi | hermes | cli",
-  "session": "abc"
+  "host": "hermes | pi | codex | claude-code",
+  "session_id": "…",
+  "turn_id": "…",
+  "task": "task text (tail of recent user turns)",
+  "recent_turns": "optional condensed context",
+  "has_images": false,
+  "current_effort": "medium",
+  "supported_levels": ["low", "medium", "high"],
+  "cap": "high",
+  "budget_ms": 4000
 }
 ```
 
@@ -27,46 +33,79 @@ Response 200:
 {
   "ok": true,
   "decision": {
-    "model": "qwen3-32b-local",
-    "thinking": "medium",
-    "lane": "coding_moderate",
-    "rule": "default-mapping",
-    "source": "lane | pin | fallback | confidence_floor | classifier_down_fallback",
-    "spawn": { "allowed": false, "forced": false, "vetoed": false, "needs_spawn_prob": 0.12 }
-  },
-  "answers": { "task_kind": {"value": "coding", "confidence": 0.93, "probabilities": {"...": 0.0}}, "...": {} },
-  "classifier_latency_ms": 88
+    "effort": "low",
+    "changed": true,
+    "source": "jev",
+    "reason_code": "jev_selected",
+    "confidence": 0.8,
+    "policy_version": "1",
+    "elapsed_ms": 210
+  }
 }
 ```
 
-Errors:
-- 503 `classifier_unavailable` — only when `classifier.down: block` (otherwise 200 with fallback decision)
-- 502 `classifier_error` — unparseable classifier response
+Keep-decision (error / timeout / no answer):
+```json
+{ "ok": true, "decision": { "effort": "<current_effort>", "changed": false,
+  "source": "fallback", "reason_code": "jev_error" } }
+```
 
-## POST /classify
-Same request minus context/harness/session; returns raw normalized answers only.
+`effort` is ALWAYS in the host's `supported_levels` (after clamp).
+`source` ∈ `jev | cache | hysteresis | fallback`.
+
+reason_code (closed set):
+
+| code | meaning |
+|---|---|
+| jev_selected | Jev picked a level, accepted after clamp |
+| jev_error | backend HTTP/protocol error → keep |
+| jev_timeout | budget_ms exceeded → keep |
+| jev_unparsable | answer without a recognizable level → keep |
+| cached | same turn, decision served from cache |
+| hysteresis_hold | >1-level downgrade held (awaiting 2 agreeing decisions) |
+| capped | Jev above user cap → cap applied |
+| no_backend | no configured/unavailable backend → keep |
 
 ## GET /health
-`{"ok": true, "classifier": "<base_url>", "state": {"last_messages": N, "max_tokens": M}, "protocol_version": 1}` — 200 if core alive (does NOT imply classifier alive). Adapters pull `state` at startup (W12); extra fields are forward-compatible (tolerate unknown keys).
 
-## Adapter contract (SPI)
+```json
+{ "ok": true, "backend": "configured", "model": "…", "policy_version": "1",
+  "credential_present": true, "warmup": "ok", "state": { "last_messages": 4, "max_tokens": 1500 } }
+```
+Header `X-Router-Protocol: 1`. The API key itself is never exposed —
+only `credential_present`. `warmup` ∈ `pending | ok | failed:<reason>`.
 
-An adapter implements four behaviors against the core:
+## POST /warmup
 
-| SPI method | Core call | Adapter action |
+Forces a re-warmup of the decision backend (synthetic prompt only, zero user
+data). 200 on success, 503 on failure; result cached per `(backend_url,
+model)` with TTL (default 1 h) in RAM + `~/.jev-router/capabilities.json`.
+A failed warmup marks the backend unavailable: `/decide` answers
+`no_backend` (keep) until manual re-warmup or TTL expiry.
+
+## Level normalization
+
+Internal canon: `off, minimal, low, medium, high, xhigh, max` (7 rungs).
+Hosts send their own spellings; the core maps to canon, decides, maps back and
+clamps to `supported_levels` (nearest weaker). Never returns a level outside
+the host's list. Hermes: `none,minimal,low,medium,high`. Pi: full canon.
+Codex: `minimal,low,medium`.
+
+## Adapter contract (SPI v1)
+
+| SPI behavior | Core call | Adapter action |
 |---|---|---|
-| onPrompt(state, ctx) | POST /decide | get decision |
-| applyRouting(decision) | — | harness-specific: setModel/setThinkingLevel/middleware kwargs |
-| spawnChild(instruction) | POST /decide (kind=child_instruction) | pass model/thinking into harness spawn API |
-| gateResult(result, criteria) | POST /classify (phase 2) | escalate/report |
+| onTurn(state) | POST /decide | extract host state, send request above |
+| applyDecision(d) | — | apply `effort` only when `changed: true`; validate against host palette; never touch model/messages/system prompt |
+| handshake | GET /health | check `X-Router-Protocol`; major mismatch => do not register |
 
-Adapters are fail-open: core unreachable => keep current model, log warning.
-Pins (decision.source == "pin") must never be overridden by adapter heuristics.
+Adapters are fail-open: core unreachable / timeout / bad decision => keep the
+host's current effort, request untouched. Adapters MUST NOT escalate effort
+on any error path. Receipts (JSONL, sanitized, daily rotation) are written by
+the core, not the adapters.
 
-## Rule field namespace (what `when.field` can reference)
-- Every question `<name>` -> chosen value
-- `<name>_confidence`, `<name>_prob` (prob of chosen; for noul: prob of TRUE)
-- context fields: `has_images`, `prompt_tokens`, `session_turn`, `harness`, `kind`
-- Ops: `== != > >= < <= in`
-- Actions: `lane`, `lane_template` (str.format over fields), `pin {model, thinking}`,
-  `veto_spawn`, `force_spawn`
+## What v1 deliberately does NOT contain
+
+- trivial-word lists (excluded by decision: Jev decides),
+- model routing (Phase 5; a `model` field in responses does not exist),
+- delegate_task veto (lives in the Hermes adapter as advisory, outside v1 core).
