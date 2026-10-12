@@ -213,37 +213,40 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 	function render(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		const ui = uiFor(ctx.sessionManager.getSessionId());
+		ctx.ui.setWidget(UI_KEY, undefined);
+
 		if (!ui.show) {
-			// Visibility off: clear the widget + status bar. Routing itself keeps
-			// running (or not) per `ui.enabled` — show only controls the UI surface.
-			ctx.ui.setWidget(UI_KEY, undefined);
 			ctx.ui.setStatus(UI_KEY, undefined);
 			return;
 		}
 		if (!ui.enabled) {
-			ctx.ui.setWidget(UI_KEY, ["⚡ jev-router: routing OFF (thinking stays manual)"], { placement: "aboveEditor" });
-			ctx.ui.setStatus(UI_KEY, "⚡ router: off");
+			ctx.ui.setStatus(UI_KEY, "⚡ off");
+			return;
+		}
+		if (ctx.model && !ctx.model.reasoning) {
+			ctx.ui.setStatus(UI_KEY, "⚡ n/a");
+			return;
+		}
+		if (daemonStatus.mode === "failed") {
+			ctx.ui.setStatus(UI_KEY, "⚡ fallback");
 			return;
 		}
 		if (last) {
-			const conf = last.confidence === undefined ? "" : ` · conf ${last.confidence.toFixed(2)}`;
-			const lat = last.latencyMs === undefined ? "" : ` · ${last.latencyMs}ms`;
-			ctx.ui.setWidget(
-				UI_KEY,
-				[
-					`${last.applied ? "✓" : "✗"} jev-router → thinking=${last.effort}`,
-					`  src=${last.source ?? "-"} · reason=${last.reasonCode ?? "-"}${conf}${lat}${last.note ? ` · ${last.note}` : ""}`,
-				],
-				{ placement: "aboveEditor" },
-			);
-			ctx.ui.setStatus(UI_KEY, `⚡ ${last.effort}`);
-		} else if (daemonStatus.mode === "failed") {
-			ctx.ui.setWidget(UI_KEY, ["⚡ jev-router: core unavailable (fail-open)"], { placement: "aboveEditor" });
-			ctx.ui.setStatus(UI_KEY, "⚡ core unavailable");
-		} else {
-			ctx.ui.setWidget(UI_KEY, ["⚡ jev-router: armed (no decision yet)"], { placement: "aboveEditor" });
-			ctx.ui.setStatus(UI_KEY, "⚡ router: armed");
+			if (
+				last.source === "fallback" ||
+				(last.reasonCode &&
+					last.reasonCode !== "jev_selected" &&
+					last.reasonCode !== "cached" &&
+					last.reasonCode !== "hysteresis_hold")
+			) {
+				ctx.ui.setStatus(UI_KEY, "⚡ fallback");
+			} else {
+				const lat = last.latencyMs !== undefined ? ` (${last.latencyMs}ms)` : "";
+				ctx.ui.setStatus(UI_KEY, `⚡ ${last.effort}${lat}`);
+			}
+			return;
 		}
+		ctx.ui.setStatus(UI_KEY, "⚡ armed");
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -279,7 +282,10 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 		// the turn makes ZERO /decide calls.
 		if (!uiFor(sessionId).enabled) return;
 		// Skip routing if the active model does not support reasoning
-		if (ctx.model && !ctx.model.reasoning) return;
+		if (ctx.model && !ctx.model.reasoning) {
+			render(ctx);
+			return;
+		}
 
 		const supportedLevels = resolveSupportedLevels(ctx.model as ModelLike | undefined);
 		if (supportedLevels.length === 0) return;
@@ -305,6 +311,8 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 			if (!decision) {
 				last = {
 					effort: currentEffort,
+					source: "fallback",
+					reasonCode: "no_backend",
 					applied: false,
 					note: "no usable decision from core (fail-open)",
 				};
@@ -328,7 +336,7 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 		} catch (e: unknown) {
 			// Fail-open by design: never break the turn; surface the degradation.
 			const msg = e instanceof Error ? e.message : String(e);
-			last = { effort: currentEffort, applied: false, note: `router error: ${msg}` };
+			last = { effort: currentEffort, source: "fallback", reasonCode: "jev_error", applied: false, note: `router error: ${msg}` };
 			render(ctx);
 		}
 	});

@@ -219,12 +219,12 @@ describe("show toggle controls the UI surface", () => {
 		assert.equal(ctx.ui.notifications.length, 0, "no notifications while show=off");
 	});
 
-	test("show on keeps the widget rendering the decision", async () => {
+	test("show on keeps the status bar rendering the decision with latency", async () => {
 		const { pi, ctx } = await booted();
 		await pi.events.before_agent_start({ prompt: "x" }, ctx);
-		const widget = ctx.ui.widgets.at(-1)![1];
-		assert.ok(Array.isArray(widget), "widget content is a string array");
-		assert.match(widget.join("\n"), /thinking=low/);
+		const status = ctx.ui.statuses.at(-1)![1];
+		assert.equal(status, "⚡ low (12ms)");
+		assert.equal(ctx.ui.widgets.at(-1)![1], undefined, "widget is kept cleared");
 	});
 });
 
@@ -298,11 +298,12 @@ describe("JEVRROUTER_UI_DEFAULT", () => {
 });
 
 describe("dynamic model thinking levels", () => {
-	test("model without reasoning skips /decide calls completely", async () => {
+	test("model without reasoning sets status to n/a and skips /decide", async () => {
 		const { pi, ctx, calls } = await booted();
 		ctx.model = { reasoning: false };
 		await pi.events.before_agent_start({ prompt: "x" }, ctx);
 		assert.equal(decideCalls(calls), 0, "non-reasoning model makes 0 decide calls");
+		assert.equal(ctx.ui.statuses.at(-1)![1], "⚡ n/a");
 	});
 
 	test("model with reasoning excludes 'off' from supported_levels", async () => {
