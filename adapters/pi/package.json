@@ -1,0 +1,13 @@
+{
+  "name": "jev-router-pi",
+  "version": "0.1.0",
+  "description": "Pi coding agent adapter for jev-router-core (model+thinking routing via System One classifier)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "src/client.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=22.19" }
+}

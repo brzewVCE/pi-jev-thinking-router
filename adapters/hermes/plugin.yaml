@@ -1,0 +1,7 @@
+name: jev-router
+version: 0.1.0
+description: "Model routing decisions from a jev-router-core daemon (System One classifiers: Kev/Laya/Jev). Rewrites the LLM request's model + reasoning effort per user-defined rules; routes delegate_task children the same way. Fail-open: if the core is down, Hermes keeps its current model."
+author: "jev-router-core contributors"
+middleware:
+  - llm_request
+  - tool_request
