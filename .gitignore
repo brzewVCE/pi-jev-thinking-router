@@ -6,5 +6,7 @@ dist/
 *.egg-info/
 .pytest_cache/
 decisions.jsonl
-adapters/pi/core/
+# adapters/pi/core/ is NOT ignored: the Pi package must ship the vendored
+# daemon (LSP pattern) so `pi install git:` works without a sibling checkout.
+# Refresh it from source with scripts/sync-core.sh before release.
 .env
