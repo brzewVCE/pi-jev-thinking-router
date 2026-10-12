@@ -352,6 +352,19 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("route", {
 		description: "jev-router: route on|off | status | last | show on|off",
+		getArgumentCompletions: (prefix: string) => {
+			const items = [
+				{ value: "on", label: "on", description: "enable routing decisions per turn" },
+				{ value: "off", label: "off", description: "disable routing decisions (thinking stays manual)" },
+				{ value: "status", label: "status", description: "core health, daemon status & session flags" },
+				{ value: "last", label: "last", description: "last routing decision details" },
+				{ value: "show on", label: "show on", description: "show widget & notifications" },
+				{ value: "show off", label: "show off", description: "hide widget & notifications" },
+			];
+			const q = prefix.trimStart().toLowerCase();
+			if (!q) return items;
+			return items.filter((s) => s.value.toLowerCase().startsWith(q));
+		},
 		handler: async (args, ctx) => {
 			const sessionId = ctx.sessionManager.getSessionId();
 			const ui = uiFor(sessionId);

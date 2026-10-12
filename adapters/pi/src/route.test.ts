@@ -154,6 +154,18 @@ describe("route command registration", () => {
 		assert.ok(pi.commands.route, "route command registered");
 		assert.ok(pi.commands.router, "legacy router command kept");
 	});
+
+	test("provides autocompletions for route subcommands", async () => {
+		const { pi } = await booted();
+		const getCompletions = (pi.commands.route as any).getArgumentCompletions;
+		assert.ok(typeof getCompletions === "function", "has getArgumentCompletions");
+		const all = getCompletions("");
+		assert.equal(all.length, 6);
+		const filtered = getCompletions("sh");
+		assert.equal(filtered.length, 2);
+		assert.equal(filtered[0].value, "show on");
+		assert.equal(filtered[1].value, "show off");
+	});
 });
 
 describe("routing toggle affects core calls", () => {
