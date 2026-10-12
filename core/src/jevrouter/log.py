@@ -19,6 +19,9 @@ class DecisionLog:
         try:
             fd = os.open(str(self.path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
             os.close(fd)
+            # pass3: files created before this fix keep old mode -> tighten on open too.
+            if os.stat(self.path).st_mode & 0o077:
+                os.chmod(self.path, 0o600)
         except OSError:
             pass
 

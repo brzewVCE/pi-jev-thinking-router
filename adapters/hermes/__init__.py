@@ -72,7 +72,12 @@ def _refresh_state_window() -> None:
     except Exception as e:  # noqa: BLE001 - core down: fail-open with defaults
         logger.warning("jev-router: could not read core /health (%s); using default state window", e)
         return
-    if int(proto) != 1:
+    try:
+        proto_num = int(proto)
+    except (TypeError, ValueError):
+        _PROTOCOL_OK = False
+        raise RuntimeError(f"non-numeric core protocol header {proto!r}")
+    if proto_num != 1:
         # Raised OUTSIDE the try so it cannot be swallowed (pass2 issue 1).
         _PROTOCOL_OK = False
         raise RuntimeError(f"unsupported core protocol {proto}")

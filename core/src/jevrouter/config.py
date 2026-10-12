@@ -44,6 +44,10 @@ class RouterConfig:
 _REQUIRED_TOP = ("classifier", "questions", "lanes", "rules", "fallback")
 
 # Fields adapters always provide in the rule namespace (see docs/SPI.md).
+# INTENT (pass2 issue 6): the validator is a CLOSED set on purpose. The engine
+# merges arbitrary adapter context at runtime, but rules may only reference
+# documented fields so configs stay portable across harnesses. Custom context
+# fields are a phase-2 SPI extension point (per-harness field registry).
 _CONTEXT_FIELDS = frozenset({
     "has_images", "prompt_tokens", "session_turn", "harness", "kind", "session_id",
 })

@@ -103,6 +103,14 @@ class TestAdapterContracts(unittest.TestCase):
             self.assertEqual(ctx.registered, [])
             self.assertFalse(mod._PROTOCOL_OK)
 
+    def test_refuses_nonnumeric_protocol_header(self):
+        # pass3 LOW: "v1" header must not crash register()
+        with _FakeCore(health_proto="v1") as core:
+            mod = load_adapter({"JEVRROUTER_URL": f"http://127.0.0.1:{core.port}"})
+            ctx = _Ctx()
+            mod.register(ctx)
+            self.assertEqual(ctx.registered, [])
+
     def test_fail_open_when_core_down(self):
         # /health unreachable -> defaults kept, adapter still registers (core may
         # come up later); decide calls return None silently.
