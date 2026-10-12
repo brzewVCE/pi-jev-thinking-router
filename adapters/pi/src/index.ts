@@ -13,16 +13,26 @@
  * timeout / bad decision keeps the current thinking level; the widget shows
  * the degraded state instead of hiding it.
  *
+ * Embedded core (LSP pattern): with no explicit JEVRROUTER_URL the extension
+ * probes 127.0.0.1:8790-8792 for a SPI v1 daemon and, when none answers, spawns
+ * the vendored `core/` daemon (`python3 -m core.jev_core`, detached, log +
+ * pidfile under the state dir; see src/daemon.ts). Spawn/readiness failure =>
+ * degraded mode: the UI shows "core unavailable", routing stays fail-open.
+ *
  * Config (env, mirrors the Hermes adapter):
- *   JEVRROUTER_URL             core daemon base URL (default http://127.0.0.1:8790)
+ *   JEVRROUTER_URL             external core daemon URL; when set, NO probe/spawn
  *   JEVRROUTER_TIMEOUT_MS      per-call timeout (default 3000)
  *   JEVRROUTER_ENABLED         "0" disables the extension entirely (default "1")
  *   JEVRROUTER_NOTIFY          "0" suppresses per-turn notifications (default "1")
  *   JEVRROUTER_CAP             user ceiling level (optional; core default = current_effort)
  *   JEVRROUTER_DEFAULT_EFFORT  effort assumed when the harness reports none (default "medium")
+ *   JEVRROUTER_PYTHON          interpreter for the embedded daemon (default "python3")
+ *   JEV_* / JEVRROUTER_*       daemon knobs (JEV_KIND, JEV_API_URL, JEV_MODEL,
+ *                              JEV_CORE_PORT, JEV_TIMEOUT_MS, JEV_HOME, ...);
+ *                              JEVRROUTER_<SUFFIX> wins over JEV_<SUFFIX>
  * Slash command `/route` (per-session, in-memory):
  *   route on|off        enable/disable routing decisions (off = zero core calls)
- *   route status        core health + session flags + last decision
+ *   route status        core health + daemon mode + session flags + last decision
  *   route last          last routing decision this session
  *   route show on|off   widget / status bar / notification visibility
  * Startup default: JEVRROUTER_UI_DEFAULT=on|off (per-session flags are not
@@ -30,9 +40,14 @@
  * The legacy `/router` command (health + last) is kept unchanged.
  */
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { fileURLToPath } from "node:url";
 import { CoreClient, applyDecision } from "./client.ts";
+import { ensureDaemon, resolveDaemonConfig, type DaemonStatus } from "./daemon.ts";
 
-const CORE_URL = (process.env.JEVRROUTER_URL ?? "http://127.0.0.1:8790").replace(/\/+$/, "");
+const EXPLICIT_URL = (process.env.JEVRROUTER_URL ?? "").trim().replace(/\/+$/, "");
+const CORE_URL = EXPLICIT_URL || "http://127.0.0.1:8790";
+/** Package root — the directory that contains the vendored core/. */
+const PACKAGE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const TIMEOUT_MS = Number(process.env.JEVRROUTER_TIMEOUT_MS ?? "3000");
 const ENABLED = process.env.JEVRROUTER_ENABLED !== "0";
 const NOTIFY = process.env.JEVRROUTER_NOTIFY !== "0";
@@ -78,6 +93,20 @@ function fmtRoute(v: RouteView): string {
 	return `${v.applied ? "APPLIED" : "not applied"} → thinking=${v.effort} ` +
 		`src=${v.source ?? "-"} reason=${v.reasonCode ?? "-"}${conf}${lat}` +
 		`${v.note ? ` · ${v.note}` : ""}`;
+}
+
+/** One-line rendering of the embedded-daemon lifecycle state for `route status`. */
+function daemonLine(st: DaemonStatus): string {
+	switch (st.mode) {
+		case "external":
+			return "external (JEVRROUTER_URL set; no probe/spawn)";
+		case "adopted":
+			return `adopted existing daemon @ ${st.url}${st.pid ? ` (pid ${st.pid})` : ""}`;
+		case "spawned":
+			return `spawned embedded daemon pid ${st.pid} @ ${st.url}`;
+		case "failed":
+			return `UNAVAILABLE — ${st.error ?? "unknown error"} (fail-open)`;
+	}
 }
 
 /** Thinking levels Pi can actually run — the full SPI v1 canon. Validated before stamping. */
@@ -134,6 +163,26 @@ function buildRecentTurns(branch: readonly unknown[], win: StateWindow): string 
 
 export default function jevRouterExtension(pi: ExtensionAPI): void {
 	const client = new CoreClient({ url: CORE_URL, timeoutMs: TIMEOUT_MS });
+	let daemonStatus: DaemonStatus = { mode: "external", url: CORE_URL };
+	let daemonReady: Promise<DaemonStatus> = Promise.resolve(daemonStatus);
+	if (!EXPLICIT_URL) {
+		// Embedded-daemon lifecycle starts at activation; hooks await the promise.
+		// ensureDaemon never rejects — the catch is a belt for unexpected throws.
+		daemonReady = ensureDaemon(resolveDaemonConfig(process.env, PACKAGE_DIR))
+			.then((st) => {
+				daemonStatus = st;
+				if (st.mode === "adopted" || st.mode === "spawned") client.setUrl(st.url);
+				return st;
+			})
+			.catch((e: unknown): DaemonStatus => {
+				daemonStatus = {
+					mode: "failed",
+					url: CORE_URL,
+					error: e instanceof Error ? e.message : String(e),
+				};
+				return daemonStatus;
+			});
+	}
 	let stateWindow: StateWindow = { last_messages: 4, max_tokens: 1500 };
 	let last: RouteView | null = null;
 	let turn = 0;
@@ -167,6 +216,9 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 				{ placement: "aboveEditor" },
 			);
 			ctx.ui.setStatus(UI_KEY, `⚡ ${last.effort}`);
+		} else if (daemonStatus.mode === "failed") {
+			ctx.ui.setWidget(UI_KEY, ["⚡ jev-router: core unavailable (fail-open)"], { placement: "aboveEditor" });
+			ctx.ui.setStatus(UI_KEY, "⚡ core unavailable");
 		} else {
 			ctx.ui.setWidget(UI_KEY, ["⚡ jev-router: armed (no decision yet)"], { placement: "aboveEditor" });
 			ctx.ui.setStatus(UI_KEY, "⚡ router: armed");
@@ -174,17 +226,23 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		const st = await daemonReady;
 		const info = await client.healthInfo();
 		if (info?.state) stateWindow = info.state;
 		if (NOTIFY && uiFor(ctx.sessionManager.getSessionId()).show) {
 			if (info) {
 				ctx.ui.notify(
-					`jev-router: core online @ ${CORE_URL} (SPI v1, warmup: ${info.warmup ?? "?"}, window: ${stateWindow.last_messages} msgs / ${stateWindow.max_tokens} tok)`,
+					`jev-router: core online @ ${client.url} (SPI v1, daemon ${st.mode}, warmup: ${info.warmup ?? "?"}, window: ${stateWindow.last_messages} msgs / ${stateWindow.max_tokens} tok)`,
 					"info",
+				);
+			} else if (st.mode === "failed") {
+				ctx.ui.notify(
+					`jev-router: core unavailable — ${st.error ?? "daemon not running"}; routing fail-open, thinking stays manual`,
+					"warning",
 				);
 			} else {
 				ctx.ui.notify(
-					`jev-router: core OFFLINE @ ${CORE_URL} — routing disabled, thinking stays manual (fail-open)`,
+					`jev-router: core OFFLINE @ ${client.url} — routing disabled, thinking stays manual (fail-open)`,
 					"warning",
 				);
 			}
@@ -194,6 +252,7 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!ENABLED) return;
+		await daemonReady; // embedded daemon settles before the first /decide
 		const sessionId = ctx.sessionManager.getSessionId();
 		// `route off` disables the decisions themselves, not just the UI:
 		// the turn makes ZERO /decide calls.
@@ -250,9 +309,11 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("router", {
 		description: "jev-router: core health + last routing decision",
 		handler: async (_args, ctx) => {
+			await daemonReady;
 			const info = await client.healthInfo();
 			const lines = [
-				`core: ${CORE_URL} — ${info ? `online (protocol ${info.protocol_version ?? "?"}, warmup: ${info.warmup ?? "?"})` : "OFFLINE (fail-open)"}`,
+				`core: ${client.url} — ${info ? `online (protocol ${info.protocol_version ?? "?"}, warmup: ${info.warmup ?? "?"})` : "OFFLINE (fail-open)"}`,
+				`daemon: ${daemonLine(daemonStatus)}`,
 				`state window: ${stateWindow.last_messages} msgs / ${stateWindow.max_tokens} tok · turns decided: ${turn}`,
 				last
 					? `last: ${last.applied ? "APPLIED" : "not applied"} → thinking=${last.effort} · src=${last.source ?? "-"} · reason=${last.reasonCode ?? "-"}${last.confidence !== undefined ? ` · conf=${last.confidence.toFixed(2)}` : ""}${last.note ? ` · ${last.note}` : ""}`
@@ -301,12 +362,14 @@ export default function jevRouterExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			if (sub === "status") {
+				await daemonReady;
 				const info = await client.healthInfo();
 				ctx.ui.notify(
 					[
 						`⚡ jev-router status (session ${sessionId})`,
 						`  routing: ${ui.enabled ? "ON" : "OFF"} · visibility (show): ${ui.show ? "ON" : "OFF"}`,
-						`  core: ${CORE_URL} — ${info ? `online (protocol ${info.protocol_version ?? "?"}, warmup: ${info.warmup ?? "?"})` : "OFFLINE (fail-open)"}`,
+						`  core: ${client.url} — ${info ? `online (protocol ${info.protocol_version ?? "?"}, warmup: ${info.warmup ?? "?"})` : "OFFLINE (fail-open)"}`,
+						`  daemon: ${daemonLine(daemonStatus)}`,
 						`  turns decided: ${turn} · ${last ? `last: ${fmtRoute(last)}` : "last: none yet"}`,
 					].join("\n"),
 					"info",

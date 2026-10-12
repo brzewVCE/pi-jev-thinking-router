@@ -6,4 +6,5 @@ dist/
 *.egg-info/
 .pytest_cache/
 decisions.jsonl
+adapters/pi/core/
 .env

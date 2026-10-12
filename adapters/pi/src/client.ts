@@ -73,7 +73,21 @@ function isRouterDecision(v: unknown): v is RouterDecision {
 }
 
 export class CoreClient {
-  constructor(private opts: CoreClientOptions) {}
+  private opts: CoreClientOptions;
+
+  constructor(opts: CoreClientOptions) {
+    this.opts = opts;
+  }
+
+  /** Re-point the client at another daemon URL (after the embedded-daemon probe/spawn picks a port). */
+  setUrl(url: string): void {
+    this.opts = { ...this.opts, url: url.replace(/\/+$/, "") };
+  }
+
+  /** The URL this client currently targets (may differ from the constructor after setUrl). */
+  get url(): string {
+    return this.opts.url;
+  }
 
   /** POST /decide. Returns the decision or null on ANY failure (fail-open). */
   async decide(req: DecideRequest): Promise<RouterDecision | null> {

@@ -1,19 +1,33 @@
 {
-  "name": "jev-router-pi",
+  "name": "jev-adaptive-router",
   "version": "0.1.0",
-  "description": "Pi coding agent adapter for jev-router core (SPI v1 effort-only thinking routing)",
+  "description": "Self-contained Pi/omp package: SPI v1 adaptive thinking-effort routing with an embedded jev-router core daemon (spawns its vendored python core on demand)",
   "license": "Apache-2.0",
   "type": "module",
-  "main": "src/client.ts",
+  "main": "src/index.ts",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "omp",
+    "jev",
+    "adaptive-routing",
+    "thinking-effort",
+    "spi-v1"
+  ],
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": ["./src/index.ts"],
+    "skills": ["./skills"]
   },
   "omp": {
     "extensions": ["./src/index.ts"]
   },
+  "files": ["src", "core", "skills"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "scripts": {
-    "build": "tsc",
-    "test": "node --test"
+    "test": "node --test src/route.test.ts src/daemon.test.ts",
+    "sync-core": "../../scripts/sync-core.sh"
   },
   "engines": { "node": ">=22.19" }
 }
