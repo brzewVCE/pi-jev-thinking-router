@@ -1,5 +1,5 @@
 {
-  "name": "jev-adaptive-router",
+  "name": "pi-jev-thinking-router",
   "version": "0.1.0",
   "description": "Self-contained Pi/omp package: SPI v1 adaptive thinking-effort routing with an embedded jev-router core daemon (spawns its vendored python core on demand)",
   "license": "Apache-2.0",

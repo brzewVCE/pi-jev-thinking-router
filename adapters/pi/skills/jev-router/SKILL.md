@@ -1,6 +1,6 @@
 ---
 name: jev-router
-description: Control and diagnose the jev-adaptive-router extension (thinking-effort routing). Use when asking about /route commands, why the thinking level changes on its own, JEVRROUTER_* or JEV_* environment variables, degraded/fail-open routing, or the local jev-router core daemon.
+description: Control and diagnose the pi-jev-thinking-router extension (thinking-effort routing). Use when asking about /route commands, why the thinking level changes on its own, JEVRROUTER_* or JEV_* environment variables, degraded/fail-open routing, or the local jev-router core daemon.
 ---
 
 # jev-router (Pi/omp adapter)
@@ -60,7 +60,7 @@ there. After spawn it re-probes every 250 ms for up to 5 s.
 ## Degraded / fail-open
 
 If no daemon answers (python missing, ports busy, daemon dead), the adapter
-degrades: widget shows `core unavailable`, every turn keeps the current
+degrades: status bar shows `⚡ fallback`, every turn keeps the current
 thinking level untouched. Routing NEVER escalates effort on an error path and
 never breaks a turn. `reason_code` values: `jev_selected`, `jev_error`,
 `jev_timeout`, `jev_unparsable`, `cached`, `hysteresis_hold`, `capped`,

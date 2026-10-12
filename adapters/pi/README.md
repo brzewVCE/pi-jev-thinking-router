@@ -1,9 +1,9 @@
-# jev-adaptive-router — Pi/omp package
+# pi-jev-thinking-router — Pi/omp package
 
 Self-contained adaptive thinking-effort routing for the Pi coding agent (and
 the omp fork). The npm package embeds the jev-router core daemon (vendored
 stdlib-only Python under `core/`) and manages its lifecycle like an LSP
-server: `pi install npm:jev-adaptive-router` is all a user needs — no external
+server: `pi install npm:pi-jev-thinking-router` is all a user needs — no external
 infrastructure, no manual daemon.
 
 SPI v1, effort-only: before each agent turn the extension asks the local
@@ -36,7 +36,7 @@ scripts/sync-core.sh            # from the repo root (or anywhere)
 Target (after `npm publish`):
 
 ```bash
-pi install npm:jev-adaptive-router
+pi install npm:pi-jev-thinking-router
 ```
 
 Today (local path — loaded from the resolved path, no copy):
@@ -80,8 +80,8 @@ sequenceDiagram
     X->>P: pi.setThinkingLevel(effort)
 ```
 
-Failure anywhere in the chain => degraded mode: widget shows
-`core unavailable`, `/decide` is skipped or fails open, thinking stays manual.
+Failure anywhere in the chain => degraded mode: status bar shows
+`⚡ fallback`, `/decide` is skipped or fails open, thinking stays manual.
 
 ## Configuration
 
@@ -119,7 +119,7 @@ Slash commands: `/route on|off`, `/route status`, `/route last`,
 
 ```bash
 cd adapters/pi
-node --test src/route.test.ts src/daemon.test.ts   # 30 tests, no python, no network
+node --test src/route.test.ts src/daemon.test.ts   # 34 tests, no python, no network
 ```
 
 The daemon suite injects probe/spawn/pidAlive/sleep fakes; the route suite
@@ -136,7 +136,7 @@ stubs `fetch` and always sets `JEVRROUTER_URL` (external mode => no spawn).
 surfaced in `/route status`; there is no retry storm (one attempt per
 activation).
 
-**`core unavailable` in the widget (degraded).** Routing stays fail-open. Check:
+**`core unavailable` / `fallback` in the status bar (degraded).** Routing stays fail-open. Check:
 
 ```bash
 curl -s -H 'X-Router-Protocol: 1' http://127.0.0.1:8790/health

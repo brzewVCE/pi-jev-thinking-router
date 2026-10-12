@@ -1,54 +1,55 @@
-# jev-router-core
+# pi-jev-thinking-router
 
-Adapter + documentation home for the **jev-router SPI v1** decision protocol.
+Self-contained adaptive thinking-effort routing for the [Pi coding agent](https://github.com/badlogic/pi-mono) (and omp).
 
-The canonical core daemon lives in `/workspace/jev-routing/core/` (SPI v1,
-stdlib-only, per `/workspace/jev-routing/CONTRACT.md`). This repo hosts the
-host-side adapters that speak that protocol:
+Powered by TypeSafe Jev (SPI v1 decision protocol).
 
-```
+Unlike typical model routers that switch between models (and discard KV prompt cache across turns), **pi-jev-thinking-router keeps the model stable and dynamically adjusts only the reasoning/thinking effort** (`minimal` to `high` / `max`). Disabling thinking (`off`) is intentionally excluded to preserve prompt cache continuity and prevent cache misses on frontier reasoning models.
+
+## Architecture
+
+- **Effort-only routing**: Before each turn, the extension queries the local core daemon (`POST /decide`) to choose the optimal thinking level for the task. The model is never switched.
+- **LSP pattern**: Automatically spawns and manages an embedded, stdlib-only Python daemon on demand (`127.0.0.1:8790`). No manual background processes or external services needed.
+- **Fail-open by design**: Any network, daemon, or timeout failure keeps the current thinking level and continues the turn without disruption.
+- **Minimalist Status Bar**: Clean indicator in the Pi status bar (`⚡ <effort> (<ms>ms)` / `⚡ fallback` / `⚡ n/a`) keeping the editor clean.
+
+## Repository Layout
+
+```text
 adapters/
-  hermes/         Hermes plugin: llm_request + tool_request middleware (SPI v1)
-  pi/             Pi/omp extension (TypeScript): setThinkingLevel (SPI v1)
+  pi/             Pi/omp extension package (TypeScript + embedded core)
+  hermes/         Hermes plugin (SPI v1 middleware)
 docs/
-  SPI.md          SPI v1 protocol reference (mirrors CONTRACT.md)
-  ATTRIBUTION.md  third-party projects referenced (no code copied)
+  SPI.md          SPI v1 protocol specification
+  ATTRIBUTION.md  Third-party project references
 ```
 
-## Protocol (SPI v1)
+## Quick Start (Pi)
 
-- HTTP JSON. Every response carries `X-Router-Protocol: 1`. Adapters
-  version-check at startup; mismatched majors refuse registration (fail-closed
-  at handshake, fail-open at decision time).
-- v1 decision shape is **effort-only**:
-  `{effort, changed, source, reason_code, policy_version, elapsed_ms[, confidence]}`.
-  The core never routes models in v1 — the executing model stays whatever the
-  host/user picked; only the reasoning effort changes per turn.
-- Fail-open is inviolable: backend down / timeout / unparsable answer =>
-  `changed: false`, the host's request stays untouched, no escalation.
-- Secrets (JEV_API_KEY) are never logged, receipted, or returned by `/health`
-  (only `credential_present: bool`).
+Install permanently:
+```bash
+pi install npm:pi-jev-thinking-router
+```
 
-See `docs/SPI.md` for the full endpoint reference and
-`/workspace/jev-routing/CONTRACT.md` for the authoritative contract.
+Or load from a local checkout:
+```bash
+pi install ./adapters/pi
+```
 
-## History note (clean cutover, 2026-09-28)
+## Slash Commands
 
-This repo previously contained a protocol-2 core (TOML rule DSL, classifier
-answers, `thinking`+`model` decisions). Per AUDIT-B-1 (B1-3) and the owner's
-decision, that core was **removed** — SPI v1 (`CONTRACT.md`) is the single
-source of truth. The old code remains in git history (pre-2026-09-28 commits).
+- `/route on` / `/route off` — enable / disable routing decisions for this session
+- `/route status` — daemon health, protocol version, and turn statistics
+- `/route last` — detailed breakdown of the last routing decision
+- `/route show on|off` — toggle status bar indicator visibility
 
-## Testing
-
-The v1 core + adapter test suites live with the core:
+## Tests
 
 ```bash
-cd /workspace/jev-routing/core
-python3 -m unittest discover -p 'test_*.py' -v   # 130 tests, stdlib only
+cd adapters/pi
+npm test        # 34 tests, no external network or Python required
 ```
 
 ## License
 
-Apache-2.0. Bundled references to third-party projects are under their own
-licenses (see docs/ATTRIBUTION.md).
+Apache-2.0
